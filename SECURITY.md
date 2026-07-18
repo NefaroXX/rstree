@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in **rstree**, please report it
+If you discover a security vulnerability in **ls-tree**, please report it
 responsibly. **Do not open a public issue.**
 
 Instead, use GitHub's private vulnerability reporting:

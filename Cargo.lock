@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "rstree"
+name = "ls-tree"
 version = "0.1.0"

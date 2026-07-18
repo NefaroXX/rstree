@@ -1,6 +1,6 @@
-# rstree
+# ls-tree
 
-[![CI](https://github.com/NefaroXX/rstree/actions/workflows/ci.yml/badge.svg)](https://github.com/NefaroXX/rstree/actions/workflows/ci.yml)
+[![CI](https://github.com/NefaroXX/ls-tree/actions/workflows/ci.yml/badge.svg)](https://github.com/NefaroXX/ls-tree/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust: stable](https://img.shields.io/badge/rust-stable-brightgreen.svg)](https://www.rust-lang.org/)
 
@@ -9,7 +9,7 @@ Rust. Point it at a directory and it recursively prints the folders and files
 as a visual hierarchy — using only the Rust standard library.
 
 ```
-$ rstree ./src
+$ ls-tree ./src
 src
 ├── lib.rs
 └── main.rs
@@ -34,31 +34,31 @@ src
 ### From source (recommended)
 
 ```bash
-git clone https://github.com/NefaroXX/rstree.git
-cd rstree
+git clone https://github.com/NefaroXX/ls-tree.git
+cd ls-tree
 cargo install --path .
 ```
 
 ### From crates.io
 
 ```bash
-cargo install rstree
+cargo install ls-tree
 ```
 
 ### Build locally
 
 ```bash
 cargo build --release
-./target/release/rstree
+./target/release/ls-tree
 ```
 
 ## Usage
 
 ```bash
-rstree [OPTIONS] [PATH]
+ls-tree [OPTIONS] [PATH]
 ```
 
-If `PATH` is omitted, `rstree` prints the current directory (`.`).
+If `PATH` is omitted, `ls-tree` prints the current directory (`.`).
 
 ### Options
 
@@ -73,13 +73,13 @@ If `PATH` is omitted, `rstree` prints the current directory (`.`).
 
 ```bash
 # Current directory
-rstree
+ls-tree
 
 # Specific path
-rstree ./src
+ls-tree ./src
 
 # Include hidden files, two levels deep
-rstree -a -L 2 /etc
+ls-tree -a -L 2 /etc
 ```
 
 ### Exit codes
@@ -91,7 +91,7 @@ rstree -a -L 2 /etc
 
 ## How it works
 
-`rstree` reads the provided path, then recursively walks the directory tree with
+`ls-tree` reads the provided path, then recursively walks the directory tree with
 `std::fs::read_dir` and `std::path::PathBuf`, emitting an indented hierarchy.
 Strings and paths are passed through the recursive walk as borrowed `&Path`
 values with owned `PathBuf`s only where ownership is genuinely needed, keeping

@@ -1,4 +1,4 @@
-//! `rstree` core logic: recursively render a directory hierarchy using the
+//! `ls-tree` core logic: recursively render a directory hierarchy using the
 //! classic `tree` drawing characters (`├──`, `└──`, `│   `).
 //!
 //! Standard library only — no external dependencies. The rendering is written
@@ -174,7 +174,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// A temporary directory that removes itself on drop (std-only; we avoid
-    /// the `tempfile` crate to keep `rstree` dependency-free).
+    /// the `tempfile` crate to keep `ls-tree` dependency-free).
     struct Tmp(PathBuf);
     impl Tmp {
         fn path(&self) -> &Path {
@@ -193,7 +193,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let mut p = std::env::temp_dir();
-        p.push(format!("rstree-test-{}-{}", std::process::id(), n));
+        p.push(format!("ls-tree-test-{}-{}", std::process::id(), n));
         fs::create_dir_all(&p).expect("create temp dir");
         Tmp(p)
     }

@@ -5,7 +5,7 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
-    # rstree is dependency-free today, but this keeps any future crate
+    # ls-tree is dependency-free today, but this keeps any future crate
     # additions up to date automatically.
   - package-ecosystem: "github-actions"
     directory: "/"

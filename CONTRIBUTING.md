@@ -1,6 +1,6 @@
-# Contributing to rstree
+# Contributing to ls-tree
 
-Thanks for your interest in improving `rstree`! This project aims to stay small,
+Thanks for your interest in improving `ls-tree`! This project aims to stay small,
 fast, and **dependency-free**. A few guidelines keep it that way.
 
 ## Getting started
@@ -32,7 +32,7 @@ cargo build --release
 ## Design principles
 
 - **Standard library only.** Do not add external crate dependencies without an
-  explicit, discussed reason. The whole point of `rstree` is being a tiny,
+  explicit, discussed reason. The whole point of `ls-tree` is being a tiny,
   dependency-free `tree` clone.
 - **Graceful, never panicking.** Unreadable paths, broken symlinks, and odd
   filesystems should produce a clear inline message (`[Access Denied]`,

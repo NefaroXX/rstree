@@ -1,13 +1,13 @@
 [package]
-name = "rstree"
+name = "ls-tree"
 version = "0.1.0"
 edition = "2021"
 description = "A lightweight, dependency-free clone of the Unix `tree` command, written in Rust."
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/NefaroXX/rstree"
-homepage = "https://github.com/NefaroXX/rstree"
-documentation = "https://docs.rs/rstree"
+repository = "https://github.com/NefaroXX/ls-tree"
+homepage = "https://github.com/NefaroXX/ls-tree"
+documentation = "https://docs.rs/ls-tree"
 keywords = ["tree", "cli", "filesystem", "directory", "terminal"]
 categories = ["command-line-utilities", "filesystem"]
 authors = ["NefaroXX"]

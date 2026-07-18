@@ -1,4 +1,4 @@
-//! `rstree` command-line interface.
+//! `ls-tree` command-line interface.
 //!
 //! A lightweight clone of the Unix `tree` command. Given an optional directory
 //! path (defaulting to the current directory), it recursively prints the
@@ -9,13 +9,13 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process;
 
-use rstree::{generate, Options};
+use ls_tree::{generate, Options};
 
 const HELP: &str = "\
-rstree - a lightweight, dependency-free clone of the `tree` command
+ls-tree - a lightweight, dependency-free clone of the `tree` command
 
 USAGE:
-    rstree [OPTIONS] [PATH]
+    ls-tree [OPTIONS] [PATH]
 
 ARGS:
     [PATH]    Directory to display. Defaults to the current directory (.).
@@ -27,9 +27,9 @@ OPTIONS:
     -V, --version      Print version information and exit.
 
 EXAMPLES:
-    rstree
-    rstree ./src
-    rstree -a -L 2 /etc
+    ls-tree
+    ls-tree ./src
+    ls-tree -a -L 2 /etc
 ";
 
 fn main() {
@@ -59,12 +59,12 @@ fn main() {
                 return;
             }
             "-V" | "--version" => {
-                println!("rstree {}", env!("CARGO_PKG_VERSION"));
+                println!("ls-tree {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
             s if s.starts_with('-') && s != "-" => {
                 eprintln!("Error: unknown option '{}'.", s);
-                eprintln!("Try 'rstree --help' for usage.");
+                eprintln!("Try 'ls-tree --help' for usage.");
                 process::exit(1);
             }
             s => path = s.to_string(),
