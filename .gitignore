@@ -1,2 +1,4 @@
 # Rust target directory (build artifacts).
 /target
+/.sisyphus
+/.codebase-memory
