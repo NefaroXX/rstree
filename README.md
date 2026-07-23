@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust: stable](https://img.shields.io/badge/rust-stable-brightgreen.svg)](https://www.rust-lang.org/)
 
-A lightweight, **dependency-free** clone of the Unix `tree` command, written in
-Rust. Point it at a directory and it recursively prints the folders and files
-as a visual hierarchy — using only the Rust standard library.
+A lightweight clone of the Unix `tree` command, written in Rust. Point it at a
+directory and it recursively prints the folders and files as a visual hierarchy
+with optional JSON output, file sizes, colouring, sorting, and more.
 
 ```
 $ ls-tree ./src
@@ -19,26 +19,26 @@ src
 
 ## Features
 
-- 🌳 Classic `tree` output using `├──`, `└──`, and `│   ` connectors.
-- 📄 **JSON output** (`--json`) — machine-readable for AI shells and OS tools.
-- 📏 **File sizes** (`-s`/`--size`) with **human-readable** (`-h`) formatting.
-- 🎨 **Colour support** — directories, executables, and symlinks are ANSI-coloured
+- Classic `tree` output using `├──`, `└──`, and `│   ` connectors.
+- **JSON output** (`--json`) — machine-readable for AI shells and OS tools.
+- **File sizes** (`-s`/`--size`) with **human-readable** (`-h`) formatting.
+- **Colour support** — directories, executables, and symlinks are ANSI-coloured
   automatically (respects `NO_COLOR`, auto-detects terminal).
-- 🙈 **`.gitignore` awareness** (`--git-ignore`) — filters entries matching
+- **`.gitignore` awareness** (`--git-ignore`) — filters entries matching
   root-level `.gitignore` rules.
-- 🔢 **Sorting** (`--sort=name/size/time`) — order entries within each directory.
-- 🗑️ **Prune** (`--prune`) — omit empty directories from the output.
-- 📁 **Directories only** (`--dirs-only`) — hide regular files.
-- 🏷️ **File-type icons** (`--icons`) — Unicode icons for directories, symlinks,
+- **Sorting** (`--sort=name/size/time`) — order entries within each directory.
+- **Prune** (`--prune`) — omit empty directories from the output.
+- **Directories only** (`--dirs-only`) — hide regular files.
+- **File-type icons** (`--icons`) — Unicode icons for directories, symlinks,
   and file types.
-- 📊 **Total size** (`--total-size`) — show recursive directory sizes.
-- 🛡️ Robust error handling — unreadable directories print `[Access Denied]`
+- **Total size** (`--total-size`) — show recursive directory sizes.
+- Robust error handling — unreadable directories print `[Access Denied]`
   and the traversal continues instead of crashing.
-- 🔗 Symlink-safe — symlinks are shown (with their target) but never descended
+- Symlink-safe — symlinks are shown (with their target) but never descended
   into, so symlink cycles cannot hang the program.
-- 🙈 Hidden-file aware — dotfiles are hidden by default (like `tree`), with a
+- Hidden-file aware — dotfiles are hidden by default (like `tree`), with a
   flag to reveal them.
-- 🎚️ `--max-depth` to limit how far down the tree is printed.
+- `--max-depth` to limit how far down the tree is printed.
 
 ## Installation
 
