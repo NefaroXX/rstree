@@ -1,6 +1,3 @@
-//! End-to-end tests that exercise the compiled `ls-tree` binary the way a user
-//! would run it.
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,8 +9,6 @@ fn ls_tree_bin() -> Command {
     )
 }
 
-/// Create a uniquely-named temp dir (std-only) and return its path. The caller
-/// is responsible for removing it.
 fn make_tmp() -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static C: AtomicU64 = AtomicU64::new(0);
@@ -65,5 +60,143 @@ fn shows_hidden_with_all_flag() {
     let stdout2 = String::from_utf8(output2.stdout).unwrap();
     assert!(!stdout2.contains(".secret"));
 
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn json_flag_outputs_valid_json() {
+    let tmp = make_tmp();
+    fs::write(tmp.join("test.txt"), b"data").unwrap();
+
+    let output = ls_tree_bin()
+        .arg("--json")
+        .current_dir(&tmp)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    assert_eq!(parsed["type"], "directory");
+    assert!(parsed["children"].is_array());
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn size_flag_shows_sizes() {
+    let tmp = make_tmp();
+    fs::write(tmp.join("data.bin"), b"hello world").unwrap();
+
+    let output = ls_tree_bin().arg("-s").current_dir(&tmp).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains('['));
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn dirs_only_flag() {
+    let tmp = make_tmp();
+    fs::create_dir(tmp.join("mydir")).unwrap();
+    fs::write(tmp.join("file.txt"), b"").unwrap();
+
+    let output = ls_tree_bin()
+        .arg("--dirs-only")
+        .current_dir(&tmp)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("mydir"));
+    assert!(!stdout.contains("file.txt"));
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn prune_flag_omits_empty_dirs() {
+    let tmp = make_tmp();
+    fs::create_dir(tmp.join("full")).unwrap();
+    fs::write(tmp.join("full").join("f.txt"), b"").unwrap();
+    fs::create_dir(tmp.join("empty")).unwrap();
+
+    let output = ls_tree_bin()
+        .arg("--prune")
+        .current_dir(&tmp)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("full/"));
+    assert!(!stdout.contains("empty/"));
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn max_depth_limits_output() {
+    let tmp = make_tmp();
+    fs::create_dir_all(tmp.join("a").join("b").join("c")).unwrap();
+    fs::write(tmp.join("a").join("b").join("c").join("deep.txt"), b"").unwrap();
+
+    let output = ls_tree_bin()
+        .arg("-L")
+        .arg("2")
+        .current_dir(&tmp)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("a/"));
+    assert!(stdout.contains("b/"));
+    assert!(!stdout.contains("deep.txt"));
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn sort_flag_does_not_crash() {
+    let tmp = make_tmp();
+    fs::write(tmp.join("z_file.txt"), b"").unwrap();
+    fs::write(tmp.join("a_file.txt"), b"").unwrap();
+
+    for sort_val in &["name", "size", "time"] {
+        let output = ls_tree_bin()
+            .arg("--sort")
+            .arg(sort_val)
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "sort={} should succeed", sort_val);
+    }
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn icons_flag_does_not_crash() {
+    let tmp = make_tmp();
+    fs::write(tmp.join("file.rs"), b"").unwrap();
+
+    let output = ls_tree_bin()
+        .arg("--icons")
+        .current_dir(&tmp)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn human_readable_flag_works() {
+    let tmp = make_tmp();
+    fs::write(tmp.join("big.bin"), b"x".repeat(2048)).unwrap();
+
+    let output = ls_tree_bin().arg("-h").current_dir(&tmp).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains('['));
     let _ = fs::remove_dir_all(&tmp);
 }

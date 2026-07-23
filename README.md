@@ -20,7 +20,18 @@ src
 ## Features
 
 - 🌳 Classic `tree` output using `├──`, `└──`, and `│   ` connectors.
-- 📦 **Zero dependencies** — pure `std` (`std::fs`, `std::path`, `std::env`).
+- 📄 **JSON output** (`--json`) — machine-readable for AI shells and OS tools.
+- 📏 **File sizes** (`-s`/`--size`) with **human-readable** (`-h`) formatting.
+- 🎨 **Colour support** — directories, executables, and symlinks are ANSI-coloured
+  automatically (respects `NO_COLOR`, auto-detects terminal).
+- 🙈 **`.gitignore` awareness** (`--git-ignore`) — filters entries matching
+  root-level `.gitignore` rules.
+- 🔢 **Sorting** (`--sort=name/size/time`) — order entries within each directory.
+- 🗑️ **Prune** (`--prune`) — omit empty directories from the output.
+- 📁 **Directories only** (`--dirs-only`) — hide regular files.
+- 🏷️ **File-type icons** (`--icons`) — Unicode icons for directories, symlinks,
+  and file types.
+- 📊 **Total size** (`--total-size`) — show recursive directory sizes.
 - 🛡️ Robust error handling — unreadable directories print `[Access Denied]`
   and the traversal continues instead of crashing.
 - 🔗 Symlink-safe — symlinks are shown (with their target) but never descended
@@ -66,7 +77,18 @@ If `PATH` is omitted, `ls-tree` prints the current directory (`.`).
 | --- | --- |
 | `-a`, `--all` | Show hidden entries (names starting with `.`). |
 | `-L`, `--max-depth N` | Descend at most `N` directory levels. |
-| `-h`, `--help` | Print the help message and exit. |
+| `--dirs-only` | Display directories only. |
+| `-s`, `--size` | Show file sizes. |
+| `-h`, `--human-readable` | Print sizes in human-readable format (implies `--size`). |
+| `--json` | Output JSON instead of the classic tree. |
+| `--git-ignore` | Respect `.gitignore` rules. |
+| `--sort=<field>` | Sort entries by `name` (default), `size`, or `time`. |
+| `--prune` | Omit empty directories from the output. |
+| `--icons` | Show Unicode file-type icons. |
+| `--total-size` | Show recursive directory sizes (implies `--size`). |
+| `--color` | Force colour output (auto-detected by default). |
+| `--no-color` | Disable colour output. |
+| `--help` | Print the help message and exit. |
 | `-V`, `--version` | Print version information and exit. |
 
 ### Examples
@@ -80,6 +102,15 @@ ls-tree ./src
 
 # Include hidden files, two levels deep
 ls-tree -a -L 2 /etc
+
+# JSON output with sizes
+ls-tree --json --size ./src
+
+# Git-ignore aware, sorted by size
+ls-tree --git-ignore --sort=size
+
+# Human-readable sizes with prune and icons
+ls-tree -h --prune --icons
 ```
 
 ### Exit codes

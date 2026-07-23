@@ -26,13 +26,13 @@ ls-tree is a lightweight, dependency-free clone of the Unix `tree` command. Give
 - Two-tier testing: in-crate unit tests (`src/lib.rs` `#[cfg(test)]`) drive `generate` against in-memory `Vec<u8>` buffers using a std-only `Tmp` temp dir (Drop-based cleanup); integration tests (`tests/cli.rs`) spawn the compiled binary via `CARGO_BIN_EXE_ls-tree` to verify real CLI behavior.
 
 ## TRADEOFFS
-- Zero dependencies keeps the binary tiny and trivially installable, at the cost of hand-rolled temp-dir management and manual cross-platform symlink handling (`#[cfg(unix)]` / `#[cfg(windows)]`).
+- Three carefully-chosen dependencies (`serde`, `serde_json`, `ignore`) were added in v0.2.0 to support JSON output and `.gitignore` awareness. Zero-dependency builds are no longer a goal.
 - Custom prefix scaffolding is simple and output-exact but less reusable/general than a pluggable pretty-printer.
 - The std-only `Tmp`/`make_tmp` helpers are duplicated between `lib.rs` tests and `tests/cli.rs`; accepted to avoid adding a dev-dependency.
 - Permission-denied tests skip (rather than fail) when run as root, since the assertions cannot hold in that context.
 
 ## PHILOSOPHY
-- Standard library only; no external dependencies.
+- Dependencies are acceptable when they enable high-value features (JSON output, `.gitignore`).
 - Rendering must be testable without a terminal or filesystem (generic `io::Write` sink).
 - Fail soft on individual path errors; only root-level, structurally invalid input (missing path / not a directory) is a hard error surfaced to the user.
 - Deterministic, `tree`-compatible output is a deliberate goal.

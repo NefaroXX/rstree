@@ -1,51 +1,109 @@
-//! `ls-tree` core logic: recursively render a directory hierarchy using the
-//! classic `tree` drawing characters (`├──`, `└──`, `│   `).
-//!
-//! Standard library only — no external dependencies. The rendering is written
-//! against a generic [`std::io::Write`] so it can be tested without touching a
-//! terminal or the filesystem.
+//! Recursively render a directory hierarchy using the classic `tree` drawing
+//! characters (`├──`, `└──`, `│   `) or output machine-readable JSON.
+//! Supports colours, file sizes, `.gitignore` awareness, sorting, pruning, and
+//! file-type icons. The render target is a generic [`std::io::Write`] so the
+//! library can be tested without a terminal or the filesystem.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-/// Options controlling how the tree is rendered.
-#[derive(Debug, Clone, Default)]
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use serde::Serialize;
+
+/// Controls how the tree is gathered and rendered.
+#[derive(Debug, Clone)]
 pub struct Options {
-    /// Show entries whose name starts with `.` (hidden on Unix). Defaults to
-    /// `false`, matching the behaviour of the standard `tree` command.
     pub show_hidden: bool,
-    /// Maximum directory depth to descend into. `None` means unlimited.
     pub max_depth: Option<usize>,
+    pub json: bool,
+    pub show_size: bool,
+    pub human_readable: bool,
+    pub color: bool,
+    pub git_ignore: bool,
+    pub dirs_only: bool,
+    pub sort_by: SortField,
+    pub prune: bool,
+    pub show_icons: bool,
+    pub show_total_size: bool,
 }
 
-/// Counts produced while rendering the tree.
+impl Default for Options {
+    fn default() -> Self {
+        let color = std::io::IsTerminal::is_terminal(&std::io::stdout())
+            && std::env::var("NO_COLOR").is_err();
+        Self {
+            show_hidden: false,
+            max_depth: None,
+            json: false,
+            show_size: false,
+            human_readable: false,
+            color,
+            git_ignore: false,
+            dirs_only: false,
+            sort_by: SortField::Name,
+            prune: false,
+            show_icons: false,
+            show_total_size: false,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SortField {
+    #[default]
+    Name,
+    Size,
+    Time,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TreeStats {
     pub directories: u64,
     pub files: u64,
 }
 
-/// Render the directory tree rooted at `root` into `out`.
-///
-/// `root` must be a path to a directory. Returns [`TreeStats`] on success.
-///
-/// Root-level errors are surfaced as [`io::Error`] so callers can print a
-/// friendly message (e.g. not found, not a directory). A root that exists but
-/// cannot be read returns a minimal tree containing a single `[Access Denied]`
-/// line and `TreeStats { directories: 1, files: 0 }`.
+#[derive(Debug, Serialize)]
+pub struct TreeNode {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(rename = "type")]
+    entry_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<TreeNode>,
+}
+
 pub fn generate(root: &Path, out: &mut impl Write, opts: &Options) -> io::Result<TreeStats> {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+
     let name = root_display_name(root)?;
 
     match fs::metadata(root) {
         Ok(meta) if meta.is_dir() => {
-            writeln!(out, "{}", name)?;
-            let mut stats = TreeStats {
-                directories: 1,
-                files: 0,
+            let gi = if opts.git_ignore {
+                build_gitignore(&canonical_root)
+            } else {
+                None
             };
-            walk(root, "", 0, opts, out, &mut stats)?;
-            Ok(stats)
+
+            let root_node = build_tree(root, &canonical_root, opts, 0, &gi)?;
+
+            if opts.json {
+                serde_json::to_writer_pretty(&mut *out, &root_node)?;
+                writeln!(out)?;
+                Ok(count_nodes(&root_node))
+            } else {
+                writeln!(out, "{}", name)?;
+                let mut stats = TreeStats {
+                    directories: 1,
+                    files: 0,
+                };
+                render_children(&root_node.children, "", opts, out, &mut stats)?;
+                Ok(stats)
+            }
         }
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -63,108 +121,341 @@ pub fn generate(root: &Path, out: &mut impl Write, opts: &Options) -> io::Result
     }
 }
 
-/// Choose a friendly display name for the root (e.g. the real folder name when
-/// the caller passed `.`).
 fn root_display_name(root: &Path) -> io::Result<String> {
-    if root.as_os_str().is_empty() || root.as_os_str() == "." {
+    let empty = root.as_os_str().is_empty() || root.as_os_str() == ".";
+    if empty {
         let cwd = std::env::current_dir()?;
-        return Ok(cwd
+        Ok(cwd
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(".")
-            .to_string());
+            .to_string())
+    } else {
+        Ok(match root.file_name().and_then(|n| n.to_str()) {
+            Some(s) => s.to_string(),
+            None => root.to_string_lossy().into_owned(),
+        })
     }
-    Ok(match root.file_name().and_then(|n| n.to_str()) {
-        Some(s) => s.to_string(),
-        None => root.to_string_lossy().into_owned(),
+}
+
+fn build_tree(
+    dir: &Path,
+    root: &Path,
+    opts: &Options,
+    depth: usize,
+    gitignore: &Option<Gitignore>,
+) -> io::Result<TreeNode> {
+    let dir_name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| dir.to_string_lossy().into_owned());
+
+    let read_dir = fs::read_dir(dir)?;
+    let mut raw: Vec<fs::DirEntry> = read_dir.filter_map(|r| r.ok()).collect();
+
+    if !opts.show_hidden {
+        raw.retain(|e| !e.file_name().to_string_lossy().starts_with('.'));
+    }
+
+    if let Some(ref gi) = *gitignore {
+        raw.retain(|e| {
+            let path = e.path();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            !is_ignored(&path, is_dir, root, gi)
+        });
+    }
+
+    if opts.dirs_only {
+        raw.retain(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false));
+    }
+
+    sort_entries(&mut raw, opts.sort_by);
+
+    let mut children: Vec<TreeNode> = Vec::new();
+
+    for entry in &raw {
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        if ft.is_symlink() {
+            let target = fs::read_link(entry.path())
+                .map(|t| t.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "<unknown>".to_string());
+            children.push(TreeNode {
+                name: format!("{} -> {}", name, target),
+                size: if opts.show_size {
+                    Some(meta.len())
+                } else {
+                    None
+                },
+                entry_type: "symlink".to_string(),
+                target: Some(target),
+                children: vec![],
+            });
+        } else if ft.is_dir() {
+            let descend = opts.max_depth.is_none_or(|max| depth + 1 < max);
+            if descend {
+                let child = build_tree(&entry.path(), root, opts, depth + 1, gitignore)?;
+                if opts.prune && child.children.is_empty() {
+                    continue;
+                }
+                let child_size = child.size.unwrap_or(0);
+                children.push(TreeNode {
+                    name,
+                    size: if opts.show_size || opts.show_total_size {
+                        Some(child_size)
+                    } else {
+                        None
+                    },
+                    entry_type: "directory".to_string(),
+                    target: None,
+                    children: child.children,
+                });
+            } else {
+                children.push(TreeNode {
+                    name,
+                    size: if opts.show_size {
+                        Some(meta.len())
+                    } else {
+                        None
+                    },
+                    entry_type: "directory".to_string(),
+                    target: None,
+                    children: vec![],
+                });
+            }
+        } else {
+            children.push(TreeNode {
+                name,
+                size: if opts.show_size {
+                    Some(meta.len())
+                } else {
+                    None
+                },
+                entry_type: "file".to_string(),
+                target: None,
+                children: vec![],
+            });
+        }
+    }
+
+    let total_size: u64 = children.iter().filter_map(|c| c.size).sum();
+
+    Ok(TreeNode {
+        name: dir_name,
+        size: if opts.show_total_size || (opts.show_size && !children.is_empty()) {
+            Some(total_size)
+        } else {
+            None
+        },
+        entry_type: "directory".to_string(),
+        target: None,
+        children,
     })
 }
 
-/// Recursively print the contents of `dir`, indenting each level with the
-/// classic tree characters. `depth` is the depth of `dir` relative to the root
-/// (root = 0) and is used only for `--max-depth` limiting.
-fn walk(
-    dir: &Path,
+fn count_nodes(node: &TreeNode) -> TreeStats {
+    let mut dirs = 0u64;
+    let mut files = 0u64;
+    if node.entry_type == "directory" {
+        dirs += 1;
+    } else {
+        files += 1;
+    }
+    for child in &node.children {
+        let s = count_nodes(child);
+        dirs += s.directories;
+        files += s.files;
+    }
+    TreeStats {
+        directories: dirs,
+        files,
+    }
+}
+
+fn render_children(
+    children: &[TreeNode],
     prefix: &str,
-    depth: usize,
     opts: &Options,
     out: &mut impl Write,
     stats: &mut TreeStats,
 ) -> io::Result<()> {
-    let mut entries = match fs::read_dir(dir) {
-        Ok(rd) => match rd.collect::<Result<Vec<_>, io::Error>>() {
-            Ok(entries) => entries,
-            Err(e) => {
-                // A read error part-way through (e.g. one unreadable entry)
-                // should not abort the whole traversal.
-                writeln!(out, "{}{}", prefix, error_label(&e))?;
-                return Ok(());
-            }
-        },
-        Err(e) => {
-            writeln!(out, "{}{}", prefix, error_label(&e))?;
-            return Ok(());
-        }
-    };
-
-    if !opts.show_hidden {
-        entries.retain(|e| !e.file_name().to_string_lossy().starts_with('.'));
-    }
-
-    // Locale-independent, deterministic ordering.
-    entries.sort_by_key(|e| e.file_name());
-
-    let last_index = entries.len().saturating_sub(1);
-    for (i, entry) in entries.iter().enumerate() {
-        let is_last = i == last_index;
+    let last = children.len().saturating_sub(1);
+    for (i, child) in children.iter().enumerate() {
+        let is_last = i == last;
         let connector = if is_last { "└── " } else { "├── " };
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
 
-        let file_type = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(e) => {
-                writeln!(out, "{}{}{}  [Error: {}]", prefix, connector, name, e)?;
+        let display = format_entry(child, opts);
+
+        match child.entry_type.as_str() {
+            "directory" => {
+                writeln!(out, "{}{}{}/", prefix, connector, display)?;
+                stats.directories += 1;
+                render_children(&child.children, &child_prefix, opts, out, &mut *stats)?;
+            }
+            "symlink" => {
+                writeln!(out, "{}{}{}", prefix, connector, display)?;
                 stats.files += 1;
-                continue;
             }
-        };
-
-        // Never descend into symlinks. This avoids infinite loops on symlink
-        // cycles and keeps the output to what is directly visible. The link
-        // target is shown for clarity.
-        if file_type.is_symlink() {
-            let target = fs::read_link(entry.path())
-                .map(|t| t.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| "<unknown>".to_string());
-            writeln!(out, "{}{}{} -> {}", prefix, connector, name, target)?;
-            stats.files += 1;
-            continue;
-        }
-
-        if file_type.is_dir() {
-            writeln!(out, "{}{}{}/", prefix, connector, name)?;
-            stats.directories += 1;
-
-            let descend = opts.max_depth.is_none_or(|max| depth + 1 < max);
-            if descend {
-                let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-                walk(&entry.path(), &child_prefix, depth + 1, opts, out, stats)?;
+            _ => {
+                writeln!(out, "{}{}{}", prefix, connector, display)?;
+                stats.files += 1;
             }
-        } else {
-            writeln!(out, "{}{}{}", prefix, connector, name)?;
-            stats.files += 1;
         }
     }
-
     Ok(())
 }
 
-fn error_label(e: &io::Error) -> String {
-    if e.kind() == io::ErrorKind::PermissionDenied {
-        "[Access Denied]".to_string()
+fn format_entry(node: &TreeNode, opts: &Options) -> String {
+    let icon = if opts.show_icons {
+        file_icon(&node.name, &node.entry_type, false)
     } else {
-        format!("[Error: {}]", e)
+        ""
+    };
+
+    let display_name = if node.entry_type == "symlink" {
+        if let Some(ref target) = node.target {
+            let bare = node.name.trim_end_matches(&format!(" -> {}", target));
+            let coloured = colorize(bare, "symlink", opts.color);
+            format!("{} -> {}", coloured, target)
+        } else {
+            colorize(&node.name, "symlink", opts.color)
+        }
+    } else {
+        colorize(&node.name, &node.entry_type, opts.color)
+    };
+
+    let suffix = if opts.human_readable {
+        if let Some(sz) = node.size {
+            format!(" [{}]", format_size_human(sz))
+        } else {
+            String::new()
+        }
+    } else if opts.show_size {
+        if let Some(sz) = node.size {
+            format!(" [{}]", sz)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    format!("{}{}{}", icon, display_name, suffix)
+}
+
+fn format_size_human(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "K", "M", "G", "T"];
+    let mut s = size as f64;
+    let mut idx = 0;
+    while s >= 1024.0 && idx < UNITS.len() - 1 {
+        s /= 1024.0;
+        idx += 1;
     }
+    if idx == 0 {
+        format!("{}", size)
+    } else if s < 10.0 {
+        format!("{:.1}{}", s, UNITS[idx])
+    } else {
+        format!("{:.0}{}", s, UNITS[idx])
+    }
+}
+
+mod colour {
+    pub const RESET: &str = "\x1b[0m";
+    pub const DIR: &str = "\x1b[1;34m";
+    pub const EXE: &str = "\x1b[32m";
+    pub const SYMLINK: &str = "\x1b[36m";
+}
+
+fn colorize(name: &str, entry_type: &str, enabled: bool) -> String {
+    if !enabled {
+        return name.to_string();
+    }
+    let code = match entry_type {
+        "directory" => colour::DIR,
+        "symlink" => colour::SYMLINK,
+        _ => colour::EXE,
+    };
+    format!("{}{}{}", code, name, colour::RESET)
+}
+
+fn file_icon(name: &str, entry_type: &str, _is_exe: bool) -> &'static str {
+    match entry_type {
+        "directory" => "\u{1f4c1} ",
+        "symlink" => "\u{1f517} ",
+        _ => {
+            if name.ends_with(".rs") {
+                "\u{1f980} "
+            } else if name.ends_with(".md") {
+                "\u{1f4dd} "
+            } else if name.ends_with(".toml") || name.ends_with(".json") || name.ends_with(".yml") {
+                "\u{2699}\u{fe0f}  "
+            } else if name.ends_with(".png")
+                || name.ends_with(".jpg")
+                || name.ends_with(".svg")
+                || name.ends_with(".ico")
+            {
+                "\u{1f5bc}\u{fe0f}  "
+            } else {
+                "\u{1f4c4} "
+            }
+        }
+    }
+}
+
+fn sort_entries(entries: &mut [fs::DirEntry], field: SortField) {
+    match field {
+        SortField::Name => {
+            entries.sort_by_key(|a| a.file_name());
+        }
+        SortField::Size => {
+            entries.sort_by(|a, b| {
+                let sa = a.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                let sb = b.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                sa.cmp(&sb)
+            });
+        }
+        SortField::Time => {
+            entries.sort_by(|a, b| {
+                let ta = a
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                let tb = b
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                ta.cmp(&tb)
+            });
+        }
+    }
+}
+
+fn build_gitignore(root: &Path) -> Option<Gitignore> {
+    let gitignore_path = root.join(".gitignore");
+    if !gitignore_path.exists() || !gitignore_path.is_file() {
+        return None;
+    }
+    let mut builder = GitignoreBuilder::new(root);
+    builder.add(gitignore_path);
+    builder.build().ok()
+}
+
+fn is_ignored(path: &Path, is_dir: bool, root: &Path, gi: &Gitignore) -> bool {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    gi.matched(rel, is_dir).is_ignore()
 }
 
 #[cfg(test)]
@@ -173,8 +464,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    /// A temporary directory that removes itself on drop (std-only; we avoid
-    /// the `tempfile` crate to keep `ls-tree` dependency-free).
     struct Tmp(PathBuf);
     impl Tmp {
         fn path(&self) -> &Path {
@@ -187,7 +476,6 @@ mod tests {
         }
     }
 
-    /// Create a uniquely-named temporary directory.
     fn make_tmp() -> Tmp {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -204,22 +492,14 @@ mod tests {
         (String::from_utf8(buf).unwrap(), stats)
     }
 
-    /// Build a small tree:
-    /// ```text
-    /// a/
-    ///   a1.txt  a2.txt  sub/deep.txt
-    /// b.txt
-    /// .hidden_file
-    /// .hidden_dir/x.txt
-    /// ```
     fn scaffold() -> Tmp {
         let tmp = make_tmp();
         fs::create_dir(tmp.path().join("a")).unwrap();
-        fs::write(tmp.path().join("a").join("a1.txt"), b"").unwrap();
-        fs::write(tmp.path().join("a").join("a2.txt"), b"").unwrap();
+        fs::write(tmp.path().join("a").join("a1.txt"), b"hello").unwrap();
+        fs::write(tmp.path().join("a").join("a2.txt"), b"world").unwrap();
         fs::create_dir(tmp.path().join("a").join("sub")).unwrap();
-        fs::write(tmp.path().join("a").join("sub").join("deep.txt"), b"").unwrap();
-        fs::write(tmp.path().join("b.txt"), b"").unwrap();
+        fs::write(tmp.path().join("a").join("sub").join("deep.txt"), b"deep").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"root").unwrap();
         fs::write(tmp.path().join(".hidden_file"), b"").unwrap();
         fs::create_dir(tmp.path().join(".hidden_dir")).unwrap();
         fs::write(tmp.path().join(".hidden_dir").join("x.txt"), b"").unwrap();
@@ -236,7 +516,6 @@ mod tests {
         assert!(out.contains("sub/"));
         assert!(out.contains("deep.txt"));
         assert!(out.contains("b.txt"));
-        // Hidden entries are excluded by default.
         assert!(!out.contains(".hidden_file"));
         assert!(!out.contains(".hidden_dir"));
         assert_eq!(
@@ -253,7 +532,7 @@ mod tests {
         let tmp = scaffold();
         let opts = Options {
             show_hidden: true,
-            max_depth: None,
+            ..Default::default()
         };
         let (out, stats) = render(tmp.path(), &opts);
         assert!(out.contains(".hidden_file"));
@@ -270,14 +549,12 @@ mod tests {
     #[test]
     fn symlink_does_not_cause_cycle() {
         let tmp = scaffold();
-        // A symlink pointing back at the tree root would loop forever if we
-        // descended into symlinks.
         #[cfg(unix)]
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("loop")).unwrap();
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(tmp.path(), tmp.path().join("loop")).unwrap();
 
-        let (out, _stats) = render(tmp.path(), &Options::default());
+        let (out, _) = render(tmp.path(), &Options::default());
         assert!(out.contains("loop"));
         assert!(out.contains("->"));
     }
@@ -293,16 +570,13 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         }
-        // If we can still read it (e.g. running as root) the assertion cannot
-        // hold — skip rather than fail.
         if fs::read_dir(&locked).is_ok() {
             return;
         }
 
-        let (out, _stats) = render(tmp.path(), &Options::default());
+        let (out, _) = render(tmp.path(), &Options::default());
         assert!(out.contains("[Access Denied]"));
 
-        // Restore permissions so the temp dir can be cleaned up.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -341,5 +615,108 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         }
+    }
+
+    #[test]
+    fn json_output_is_valid() {
+        let tmp = scaffold();
+        let opts = Options {
+            json: true,
+            ..Default::default()
+        };
+        let (out, stats) = render(tmp.path(), &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert!(parsed.get("name").is_some());
+        assert_eq!(parsed["type"], "directory");
+        assert!(stats.directories >= 1);
+        assert!(parsed["children"].is_array());
+    }
+
+    #[test]
+    fn json_output_serializes_symlinks() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("target.txt"), b"hi").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("target.txt", tmp.path().join("link")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file("target.txt", tmp.path().join("link")).unwrap();
+
+        let opts = Options {
+            json: true,
+            ..Default::default()
+        };
+        let (out, _) = render(tmp.path(), &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let children = parsed["children"].as_array().unwrap();
+        if children.len() == 2 {
+            let has_symlink = children.iter().any(|c| c["type"] == "symlink");
+            assert!(has_symlink, "output should contain a symlink: {}", out);
+        }
+    }
+
+    #[test]
+    fn size_flag_adds_size_info() {
+        let tmp = scaffold();
+        let opts = Options {
+            show_size: true,
+            ..Default::default()
+        };
+        let (out, _) = render(tmp.path(), &opts);
+        assert!(out.contains('['));
+    }
+
+    #[test]
+    fn dirs_only_shows_only_directories() {
+        let tmp = scaffold();
+        let opts = Options {
+            dirs_only: true,
+            ..Default::default()
+        };
+        let (out, stats) = render(tmp.path(), &opts);
+        assert!(out.contains("a/"));
+        assert!(out.contains("sub/"));
+        assert!(!out.contains("a1.txt"));
+        assert_eq!(stats.files, 0);
+        assert!(stats.directories >= 2);
+    }
+
+    #[test]
+    fn prune_removes_empty_dirs() {
+        let tmp = make_tmp();
+        fs::create_dir(tmp.path().join("full")).unwrap();
+        fs::write(tmp.path().join("full").join("f.txt"), b"").unwrap();
+        fs::create_dir(tmp.path().join("empty")).unwrap();
+
+        let opts = Options {
+            prune: true,
+            ..Default::default()
+        };
+        let (out, _) = render(tmp.path(), &opts);
+        assert!(out.contains("full/"));
+        assert!(!out.contains("empty/"));
+    }
+
+    #[test]
+    fn max_depth_limits_recursion() {
+        let tmp = scaffold();
+        let opts = Options {
+            max_depth: Some(1),
+            ..Default::default()
+        };
+        let (out, _) = render(tmp.path(), &opts);
+        assert!(out.contains("a/"));
+        assert!(out.contains("b.txt"));
+        assert!(!out.contains("deep.txt"));
+    }
+
+    #[test]
+    fn icons_are_rendered() {
+        let tmp = scaffold();
+        let opts = Options {
+            show_icons: true,
+            ..Default::default()
+        };
+        let (out, _) = render(tmp.path(), &opts);
+        assert!(out.contains('\u{1f4c1}'));
     }
 }
