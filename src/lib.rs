@@ -16,7 +16,10 @@ use serde::Serialize;
 pub struct Options {
     pub show_hidden: bool,
     pub max_depth: Option<usize>,
+    /// Deprecated: use [`format`](Self::format) instead. When `true` it forces
+    /// [`Format::Json`] regardless of `format`.
     pub json: bool,
+    pub format: Format,
     pub show_size: bool,
     pub human_readable: bool,
     pub color: bool,
@@ -28,6 +31,17 @@ pub struct Options {
     pub show_total_size: bool,
 }
 
+impl Options {
+    /// Return the effective output format, respecting the legacy `json` flag.
+    pub fn effective_format(&self) -> Format {
+        if self.json {
+            Format::Json
+        } else {
+            self.format
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         let color = std::io::IsTerminal::is_terminal(&std::io::stdout())
@@ -36,6 +50,7 @@ impl Default for Options {
             show_hidden: false,
             max_depth: None,
             json: false,
+            format: Format::default(),
             show_size: false,
             human_readable: false,
             color,
@@ -57,6 +72,18 @@ pub enum SortField {
     Time,
 }
 
+/// Controls which output format is used to render the tree.
+///
+/// The default is [`Tree`](Format::Tree). Use [`Flat`](Format::Flat) for a
+/// find-style listing or [`Json`](Format::Json) for machine-readable output.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    #[default]
+    Tree,
+    Flat,
+    Json,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TreeStats {
     pub directories: u64,
@@ -76,7 +103,26 @@ pub struct TreeNode {
     children: Vec<TreeNode>,
 }
 
+/// Convenience entry point that selects the built-in formatter based on
+/// [`Options::effective_format`] and delegates to [`generate_with_formatter`].
 pub fn generate(root: &Path, out: &mut impl Write, opts: &Options) -> io::Result<TreeStats> {
+    match opts.effective_format() {
+        Format::Tree => generate_with_formatter(root, out, opts, &TreeFormatter),
+        Format::Flat => generate_with_formatter(root, out, opts, &FlatFormatter),
+        Format::Json => generate_with_formatter(root, out, opts, &JsonFormatter),
+    }
+}
+
+/// Build the tree and hand it off to a custom [`OutputFormatter`].
+///
+/// This is the primitive that [`generate`] calls internally. Use it directly
+/// when you want to supply your own formatter implementation.
+pub fn generate_with_formatter(
+    root: &Path,
+    out: &mut impl Write,
+    opts: &Options,
+    formatter: &dyn OutputFormatter,
+) -> io::Result<TreeStats> {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
     let name = root_display_name(root)?;
@@ -102,19 +148,7 @@ pub fn generate(root: &Path, out: &mut impl Write, opts: &Options) -> io::Result
                 Err(e) => return Err(e),
             };
 
-            if opts.json {
-                serde_json::to_writer_pretty(&mut *out, &root_node)?;
-                writeln!(out)?;
-                Ok(count_nodes(&root_node))
-            } else {
-                writeln!(out, "{}", name)?;
-                let mut stats = TreeStats {
-                    directories: 1,
-                    files: 0,
-                };
-                render_children(&root_node.children, "", opts, out, &mut stats)?;
-                Ok(stats)
-            }
+            formatter.write_tree(&root_node, &name, opts, out)
         }
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -310,11 +344,122 @@ fn count_nodes(node: &TreeNode) -> TreeStats {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Output formatter trait + built-in implementations
+// ---------------------------------------------------------------------------
+
+/// Renders a complete [`TreeNode`] tree into the supplied writer.
+///
+/// Each implementation produces a different output format (tree, flat, JSON).
+/// Library consumers can implement this trait to supply custom formats.
+pub trait OutputFormatter {
+    /// Render a complete tree into `out`.
+    ///
+    /// Implementations receive the root [`TreeNode`] (already fully built), the
+    /// display name of the root path, the active options, and the output writer.
+    fn write_tree(
+        &self,
+        root: &TreeNode,
+        root_name: &str,
+        opts: &Options,
+        out: &mut dyn Write,
+    ) -> io::Result<TreeStats>;
+}
+
+/// Classic `├──` / `└──` / `│   ` tree output.
+pub struct TreeFormatter;
+
+/// Find-style flat listing (one path per line).
+pub struct FlatFormatter;
+
+/// Machine-readable JSON output.
+pub struct JsonFormatter;
+
+impl OutputFormatter for TreeFormatter {
+    fn write_tree(
+        &self,
+        root: &TreeNode,
+        root_name: &str,
+        opts: &Options,
+        out: &mut dyn Write,
+    ) -> io::Result<TreeStats> {
+        writeln!(out, "{}", root_name)?;
+        let mut stats = TreeStats {
+            directories: 1,
+            files: 0,
+        };
+        render_children(&root.children, "", opts, out, &mut stats)?;
+        Ok(stats)
+    }
+}
+
+impl OutputFormatter for JsonFormatter {
+    fn write_tree(
+        &self,
+        root: &TreeNode,
+        _root_name: &str,
+        _opts: &Options,
+        out: &mut dyn Write,
+    ) -> io::Result<TreeStats> {
+        serde_json::to_writer_pretty(&mut *out, root)?;
+        writeln!(out)?;
+        Ok(count_nodes(root))
+    }
+}
+
+impl OutputFormatter for FlatFormatter {
+    fn write_tree(
+        &self,
+        root: &TreeNode,
+        root_name: &str,
+        opts: &Options,
+        out: &mut dyn Write,
+    ) -> io::Result<TreeStats> {
+        writeln!(out, "{}", root_name)?;
+        let mut stats = TreeStats {
+            directories: 1,
+            files: 0,
+        };
+        flatten_children(root, "", opts, out, &mut stats)?;
+        Ok(stats)
+    }
+}
+
+/// Recursively print child entries as flat relative paths.
+fn flatten_children(
+    node: &TreeNode,
+    prefix: &str,
+    _opts: &Options,
+    out: &mut dyn Write,
+    stats: &mut TreeStats,
+) -> io::Result<()> {
+    for child in &node.children {
+        let path = if prefix.is_empty() {
+            child.name.clone()
+        } else {
+            format!("{}/{}", prefix, child.name)
+        };
+
+        match child.entry_type.as_str() {
+            "directory" => {
+                writeln!(out, "{}/", path)?;
+                stats.directories += 1;
+                flatten_children(child, &path, _opts, out, stats)?;
+            }
+            _ => {
+                writeln!(out, "{}", path)?;
+                stats.files += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn render_children(
     children: &[TreeNode],
     prefix: &str,
     opts: &Options,
-    out: &mut impl Write,
+    out: &mut dyn Write,
     stats: &mut TreeStats,
 ) -> io::Result<()> {
     let last = children.len().saturating_sub(1);

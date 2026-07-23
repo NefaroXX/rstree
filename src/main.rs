@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process;
 
-use ls_tree::{generate, Options, SortField};
+use ls_tree::{generate, Format, Options, SortField};
 
 const HELP: &str = "\
 ls-tree - a lightweight clone of the `tree` command
@@ -20,7 +20,8 @@ OPTIONS:
     --dirs-only           Display directories only.
     -s, --size            Show file sizes.
     -h, --human-readable  Print sizes in human-readable format (implies --size).
-    --json                Output JSON instead of the classic tree.
+    --json                Output JSON instead of the classic tree (deprecated: use --format=json).
+    --format=<fmt>        Output format: tree (default), flat, or json.
     --git-ignore          Respect .gitignore rules.
     --sort=<field>        Sort entries by name (default), size, or time.
     --prune               Omit empty directories from the output.
@@ -65,7 +66,36 @@ fn main() {
                 opts.human_readable = true;
                 opts.show_size = true;
             }
-            "--json" => opts.json = true,
+            "--json" => {
+                opts.json = true;
+                opts.format = Format::Json;
+            }
+            s if s == "--format" || s.starts_with("--format=") => {
+                let val = if let Some(v) = s.strip_prefix("--format=") {
+                    v
+                } else {
+                    i += 1;
+                    match args.get(i).map(|s| s.as_str()) {
+                        Some(v) => v,
+                        None => {
+                            eprintln!("Error: --format requires a value (tree/flat/json).");
+                            process::exit(1);
+                        }
+                    }
+                };
+                match val {
+                    "tree" => opts.format = Format::Tree,
+                    "flat" => opts.format = Format::Flat,
+                    "json" => opts.format = Format::Json,
+                    other => {
+                        eprintln!(
+                            "Error: --format requires 'tree', 'flat', or 'json', got '{}'.",
+                            other
+                        );
+                        process::exit(1);
+                    }
+                }
+            }
             "--git-ignore" => opts.git_ignore = true,
             "--sort" => {
                 i += 1;
@@ -118,7 +148,7 @@ fn main() {
 
     match generate(root, &mut out, &opts) {
         Ok(stats) => {
-            if !opts.json {
+            if opts.effective_format() == Format::Tree {
                 let _ = writeln!(
                     out,
                     "\n{} directories, {} files",
