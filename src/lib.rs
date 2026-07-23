@@ -89,7 +89,18 @@ pub fn generate(root: &Path, out: &mut impl Write, opts: &Options) -> io::Result
                 None
             };
 
-            let root_node = build_tree(root, &canonical_root, opts, 0, &gi)?;
+            let root_node = match build_tree(root, &canonical_root, opts, 0, &gi) {
+                Ok(node) => node,
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                    writeln!(out, "{}", name)?;
+                    writeln!(out, "└── [Access Denied]")?;
+                    return Ok(TreeStats {
+                        directories: 1,
+                        files: 0,
+                    });
+                }
+                Err(e) => return Err(e),
+            };
 
             if opts.json {
                 serde_json::to_writer_pretty(&mut *out, &root_node)?;
@@ -151,7 +162,25 @@ fn build_tree(
         .map(|s| s.to_string())
         .unwrap_or_else(|| dir.to_string_lossy().into_owned());
 
-    let read_dir = fs::read_dir(dir)?;
+    let read_dir = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied && depth > 0 => {
+            return Ok(TreeNode {
+                name: dir_name,
+                size: None,
+                entry_type: "directory".to_string(),
+                target: None,
+                children: vec![TreeNode {
+                    name: "[Access Denied]".to_string(),
+                    size: None,
+                    entry_type: "file".to_string(),
+                    target: None,
+                    children: vec![],
+                }],
+            });
+        }
+        Err(e) => return Err(e),
+    };
     let mut raw: Vec<fs::DirEntry> = read_dir.filter_map(|r| r.ok()).collect();
 
     if !opts.show_hidden {
